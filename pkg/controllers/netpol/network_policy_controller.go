@@ -101,6 +101,7 @@ type networkPolicyInfo struct {
 	name        string
 	namespace   string
 	podSelector labels.Selector
+	annotations map[string]string
 
 	// set of pods matching network policy spec podselector label selector
 	targetPods map[string]podInfo
@@ -814,11 +815,31 @@ func (npc *NetworkPolicyController) populateProtectedPodsIPSet(activePodIPs map[
 // ensureTailChainPosition ensures each KUBE-ROUTER-{INPUT,FORWARD,OUTPUT} chain ends with a jump into
 // KUBE-NWPLCY-TAIL, placing it after the per-pod KUBE-POD-FW-* jumps written earlier in the same sync.
 func (npc *NetworkPolicyController) ensureTailChainPosition() {
-	for _, filterTableRules := range npc.filterTableRules {
-		for _, chain := range defaultChains {
-			comment := "\"rule to explicitly handle traffic for network policies ACCEPT/REJECT decision\""
+	for ipFamily, filterTableRules := range npc.filterTableRules {
+		iptablesCmdHandler := npc.iptablesCmdHandlers[ipFamily]
+		for mainChain := range defaultChains {
+			comment := "\"KUBE-ROUTER rule to explicitly handle traffic for network policies ACCEPT/REJECT decision\""
 			args := []string{"-m", "comment", "--comment", comment, "-j", kubeTailNetpolChain}
-			utils.AppendUnique(filterTableRules, chain, args)
+			exists, err := utils.Exists(filterTableRules, mainChain, args)
+			if err != nil {
+				utils.AppendUnique(filterTableRules, mainChain, args)
+			} else if !exists {
+				rules, err := iptablesCmdHandler.List("filter", mainChain)
+				if err != nil {
+					utils.AppendUnique(filterTableRules, mainChain, args)
+				} else {
+					newRulePos := 0
+					for pos, rule := range rules {
+						if strings.Contains(rule, "KUBE") {
+							newRulePos = pos
+						}
+					}
+					err = utils.Insert(filterTableRules, mainChain, newRulePos+1, args)
+					if err != nil {
+						utils.AppendUnique(filterTableRules, mainChain, args)
+					}
+				}
+			}
 		}
 	}
 }
