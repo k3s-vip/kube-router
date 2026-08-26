@@ -138,7 +138,7 @@ func rangesForFamilies(ipv4, ipv6 []net.IPNet, families []v1core.IPFamily) []net
 			result = append(result, ipv4...)
 		case v1core.IPv6Protocol:
 			result = append(result, ipv6...)
-		case v1core.IPFamilyUnknown:
+		default:
 			// Unknown family — skip silently
 		}
 	}

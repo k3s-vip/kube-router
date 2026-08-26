@@ -149,6 +149,25 @@ func (npc *NetworkPolicyControllerIptables) syncNetworkPolicyChains(networkPolic
 				}
 				activePolicyIPSets[targetSourcePodIPSetName] = true
 			}
+			// Extra logs to get more information about the policy dropping the packet via ulog2
+			logRuleComment := "\"rule to log dropped traffic\""
+
+			// The network policy annotation can include a log config
+			limit, limitBurst := getIptablesNFlogLimit(policy.annotations)
+
+			// LogComment is capped at 64 characters and we are using 16, hence policyNamespace and policyName
+			// must fit in 48 characters otherwise we can only log the first 24 characters
+			policyNamespaceAndName := safeJoin(policy.namespace, policy.name)
+			logComment := "\"DROP by policy " + policyNamespaceAndName + "\""
+			logArgs := []string{"-A", policyChainName, "-m", "comment", "--comment", logRuleComment, "-m", "limit",
+				"--limit", limit, "--limit-burst", limitBurst, "-m", "mark", "!", "--mark", "0x10000/0x10000",
+				"-j", "NFLOG", "--nflog-group", "100", "--nflog-prefix", logComment, "\n"}
+			npc.filterTableRules[ipFamily].WriteString(strings.Join(logArgs, " "))
+			if isMonitorPolicy(policy) {
+				monitorRule := []string{"-A", policyChainName, "-m", "comment", "--comment", "\"rule to mark to monitor traffic\"",
+					"-m", "mark", "!", "--mark", "0x10000/0x10000", "-j", "MARK", "--set-xmark", "0x50000/0x50000", "\n"}
+				npc.filterTableRules[ipFamily].WriteString(strings.Join(monitorRule, " "))
+			}
 		}
 	}
 
@@ -482,7 +501,7 @@ func (npc *NetworkPolicyControllerIptables) appendRuleToPolicyChain(
 	}
 
 	//nolint:gocritic // we want to append to a separate array here so that we can re-use args below
-	markArgs := append(args, "-j", "MARK", "--set-xmark", "0x10000/0x10000", "\n")
+	markArgs := append(args, "-j", "MARK", "--set-xmark", "0x10000/0x50000", "\n")
 	npc.filterTableRules[ipFamily].WriteString(strings.Join(markArgs, " "))
 
 	args = append(args, "-m", "mark", "--mark", "0x10000/0x10000", "-j", "RETURN", "\n")
@@ -509,6 +528,7 @@ func (npc *NetworkPolicyControllerBase) buildNetworkPoliciesInfo() ([]networkPol
 			namespace:   policy.Namespace,
 			podSelector: podSelector,
 			policyType:  kubeIngressPolicyType,
+			annotations: policy.Annotations,
 		}
 
 		ingressType, egressType := false, false
@@ -959,4 +979,8 @@ func policyRulePortsHasNamedPort(npPorts []networking.NetworkPolicyPort) bool {
 		}
 	}
 	return false
+}
+
+func isMonitorPolicy(policy networkPolicyInfo) bool {
+	return policy.annotations["kube-router.io/network-policy.monitor"] == "true"
 }
