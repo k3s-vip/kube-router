@@ -724,12 +724,29 @@ func (npc *NetworkPolicyControllerIptables) populateProtectedPodsIPSet(activePod
 // ensureTailChainPosition ensures each KUBE-ROUTER-{INPUT,FORWARD,OUTPUT} chain ends with a jump into
 // KUBE-NWPLCY-TAIL, placing it after the per-pod KUBE-POD-FW-* jumps written earlier in the same sync.
 func (npc *NetworkPolicyControllerIptables) ensureTailChainPosition() {
-	for _, filterTableRules := range npc.filterTableRules {
+	for ipFamily, filterTableRules := range npc.filterTableRules {
+		iptablesCmdHandlers := npc.iptablesCmdHandlers[ipFamily]
 		for _, chain := range defaultChains {
 			// Frozen comment: rule identity for AppendUnique, see the note on ensureExplicitAccept
-			comment := "\"rule to explicitly handle traffic for network policies ACCEPT/REJECT decision\""
+			comment := "\"KUBE-ROUTER rule to explicitly handle traffic for network policies ACCEPT/REJECT decision\""
 			args := []string{"-m", "comment", "--comment", comment, "-j", kubeTailNetpolChain}
-			utils.AppendUnique(filterTableRules, chain, args)
+			if !utils.Exists(filterTableRules, chain, args) {
+				rules, err := iptablesCmdHandlers.List("filter", chain)
+				if err != nil {
+					utils.AppendUnique(filterTableRules, chain, args)
+				} else {
+					newRulePos := 0
+					for pos, rule := range rules {
+						if strings.Contains(rule, "KUBE") {
+							newRulePos = pos
+						}
+					}
+					err = utils.Insert(filterTableRules, chain, newRulePos+1, args)
+					if err != nil {
+						utils.AppendUnique(filterTableRules, chain, args)
+					}
+				}
+			}
 		}
 	}
 }
